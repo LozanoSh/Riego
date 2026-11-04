@@ -1,0 +1,6 @@
+sector,cultivo,area_ha,sensor_disponible,humedad_suelo_pct,temperatura_suelo_c,ec_ds_m,ndvi,edad_ndvi_dias,dias_desde_ultimo_riego,turnos_sin_regar,riego_ultimo_turno,restriccion,ruido_sensor_pct,riego_simulado_mm_h,sector_id,x,y,ancho,alto,canal_id
+Sector A,Vid,1.2,1,30,21,1.0,0.72,2,3,0,1,Ninguna,0.2,0,sector-1,8.0,8.0,34.0,25.0,canal-a
+Sector B,Vid,1.0,1,25,24,1.4,0.52,3,7,1,0,Ninguna,0.2,0,sector-2,54.0,8.0,34.0,25.0,canal-b
+Sector C,Olivo,0.9,1,28,23,1.2,0.6,2,6,1,0,Ninguna,0.2,0,sector-3,8.0,41.0,34.0,25.0,canal-b
+Sector D,Vid,1.4,1,27,22,0.9,0.67,5,5,0,1,Ninguna,0.2,0,sector-4,54.0,41.0,34.0,25.0,canal-c
+Sector E,Frutal,0.8,1,24,25,1.6,0.46,1,8,1,0,Ninguna,0.2,0,sector-5,31.0,74.0,34.0,20.0,canal-d

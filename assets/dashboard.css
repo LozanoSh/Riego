@@ -1,0 +1,119 @@
+.gradio-container {
+  --soil-ink: #213b35; --soil-muted: #536961; --soil-base: #f5f7f4;
+  --soil-panel: #ffffff; --soil-line: #dce4df; --water-blue: #256f99;
+  --leaf-green: #216c50; --leaf-tint: #edf6ef; --sun-amber: #875c0b;
+  --sun-tint: #fff6df; --alert-red: #a73732; --alert-tint: #fff0ee;
+  --no-data: #65716e; --data-tint: #f0f3f2;
+  width: 100% !important; min-width: 0 !important;
+  max-width: 1320px !important; margin-inline: auto !important; padding: clamp(12px, 2vw, 24px) !important;
+  color: var(--soil-ink); font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+.dark .gradio-container {
+  --soil-ink: #e4eee9; --soil-muted: #a8b9b0; --soil-base: #151f1b;
+  --soil-panel: #1e2b25; --soil-line: #3b4b42; --water-blue: #88c8ec;
+  --leaf-green: #9bd5b5; --leaf-tint: #233b2c; --sun-amber: #ebc57b;
+  --sun-tint: #3b3220; --alert-red: #f2a49d; --alert-tint: #402b2a;
+  --no-data: #b1bfba; --data-tint: #2a3630;
+}
+.gradio-container h1 { font-size: clamp(24px, 2.1vw, 28px) !important; letter-spacing: -.025em; line-height: 1.2; color: var(--soil-ink); }
+.gradio-container h2 { font-size: 22px !important; letter-spacing: -.02em; }
+.gradio-container h3 { font-size: 18px !important; }
+.gradio-container p { line-height: 1.55; }
+.gradio-container button { min-height: 44px; }
+.gradio-container [role="tab"][aria-selected="true"] { color: var(--leaf-green) !important; }
+.gradio-container button:focus-visible, .gradio-container input:focus-visible { outline: 2px solid var(--water-blue) !important; outline-offset: 3px; }
+.gradio-container ::selection { background: var(--leaf-tint); color: var(--soil-ink); }
+.gradio-container input { caret-color: var(--leaf-green); }
+.demo-banner { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 24px; padding: 12px 16px; background: var(--leaf-tint); color: var(--leaf-green); border-radius: 8px; font-size: 14px; }
+.demo-banner span { color: var(--soil-muted); }
+#workspace-tabs > .tab-nav { gap: 4px; padding: 8px 0 12px; flex-wrap: wrap; }
+#workspace-tabs > .tab-nav button { font-size: 12px; font-weight: 600; padding: 10px 12px; }
+.stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 8px 0 24px; }
+.stat-card { padding: 20px; border: 1px solid var(--soil-line); background: var(--soil-panel); border-radius: 12px; min-height: 140px; overflow-wrap: anywhere; }
+.stat-label { color: var(--soil-muted); font-size: 13px; margin-bottom: 12px; }
+.stat-value { font-size: 23px; line-height: 1.2; font-weight: 650; color: var(--water-blue); }
+.stat-detail { color: var(--soil-muted); font-size: 12px; line-height: 1.45; margin-top: 12px; }
+.stat-card.normal .stat-value { color: var(--leaf-green); }
+.stat-card.warning .stat-value { color: var(--sun-amber); }
+.stat-card.critical .stat-value { color: var(--alert-red); }
+.stat-card.neutral .stat-value { color: var(--no-data); }
+.sensor-note { padding: 16px 20px; border: 1px solid var(--soil-line); border-radius: 12px; color: var(--soil-ink); }
+.sensor-note p, .sensor-note small { color: var(--soil-muted); font-size: 13px; }
+.sensor-values { display: flex; flex-wrap: wrap; gap: 16px 32px; margin: 16px 0; }
+.sensor-values span { color: var(--soil-muted); font-size: 13px; }
+.sensor-values b { display: block; font-size: 20px; color: var(--soil-ink); margin-top: 4px; }
+.water-route { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 16px 0 24px; }
+.water-stop { flex: 1; min-width: 124px; display: flex; flex-direction: column; gap: 8px; padding: 16px 12px; border-radius: 8px; background: var(--data-tint); color: var(--soil-ink); }
+.water-stop strong { font-size: 12px; }
+.water-stop b { font-size: 20px; color: var(--water-blue); }
+.water-stop span, .water-stop small { font-size: 11px; line-height: 1.5; color: var(--soil-muted); }
+.flow-arrow { color: var(--water-blue); font-size: 20px; }
+.architecture-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; margin: 24px 0; }
+.architecture-flow { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.architecture-node { padding: 12px 24px; border: 1px solid var(--soil-line); border-radius: 8px; width: 100%; max-width: 360px; text-align: center; color: var(--soil-ink); }
+.architecture-flow > span { color: var(--water-blue); }
+.empty-note { color: var(--soil-muted); padding: 24px 0; }
+.js-plotly-plot .xtick text, .js-plotly-plot .ytick text, .js-plotly-plot .gtitle, .js-plotly-plot .ytitle, .js-plotly-plot .xtitle { fill: var(--soil-muted) !important; }
+@media (max-width: 900px) {
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+}
+@media (max-width: 540px) {
+
+
+  .stat-grid { gap: 8px; }
+  .stat-card { min-height: 132px; padding: 12px; }
+  .stat-value { font-size: 19px; }
+  .architecture-grid { grid-template-columns: 1fr; gap: 24px; }
+  .water-stop { min-width: 116px; }
+}
+
+.gradio-container > .app { padding: 16px 0 !important; min-width: 0 !important; max-width: 100%; }
+@media (max-width: 650px) {
+  #run-toolbar { flex-direction: column !important; align-items: stretch !important; }
+  #run-toolbar > * { width: 100% !important; min-width: 0 !important; }
+  #run-toolbar button { width: 100% !important; }
+}
+
+/* Croquis relativo: geometría funcional, sin georreferenciación. */
+.stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.stat-card { min-height: 116px; padding: 16px 20px; }
+.farm-canvas { overflow-x: auto; border: 1px solid var(--soil-line); border-radius: 12px; background: #fff; }
+.farm-canvas svg { display: block; width: 100%; min-width: 600px; max-height: 640px; font-family: "Source Sans Pro", Arial, sans-serif; }
+.farm-summary .farm-canvas svg { height: 420px; min-width: 500px; }
+.farm-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 12px 0; color: var(--soil-muted); font-size: 12px; }
+.farm-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.farm-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+.farm-legend .low { background: var(--leaf-green); }
+.farm-legend .medium { background: var(--sun-amber); }
+.farm-legend .high { background: var(--alert-red); }
+.farm-legend .unknown { background: var(--no-data); }
+.farm-caption { color: var(--soil-muted); font-size: 12px; line-height: 1.5; margin-top: 8px; }
+.farm-detail { padding: 16px; border: 1px solid var(--soil-line); border-radius: 12px; color: var(--soil-ink); background: var(--soil-panel); }
+.farm-detail h3 { margin: 0 0 16px; }
+.farm-detail dl { margin: 0; }
+.farm-detail dl > div { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 7px 0; font-size: 13px; }
+.farm-detail dt { color: var(--soil-muted); }
+.farm-detail dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.farm-detail small { color: var(--soil-muted); display: block; margin-top: 16px; font-size: 11px; }
+.farm-coincidence { background: var(--sun-tint); color: var(--sun-amber); padding: 12px; border-radius: 8px; font-size: 13px; margin-top: 16px; }
+.map-preview { color: var(--sun-amber); background: var(--sun-tint); padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+.farm-recommendation { margin: 16px 0 24px; color: var(--soil-ink); }
+.farm-recommendation p { font-size: 15px; line-height: 1.6; }
+.farm-recommendation small { color: var(--soil-muted); font-size: 13px; }
+.sector-card-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin: 8px 0 24px; }
+.sector-mini { border: 1px solid var(--soil-line); border-radius: 12px; padding: 16px; color: var(--soil-ink); }
+.sector-mini h3 { margin: 0 0 8px; }
+.sector-mini p { margin: 4px 0; font-size: 14px; }
+.sector-mini small { display: block; color: var(--soil-muted); font-size: 12px; margin-top: 8px; }
+@media (max-width: 900px) {
+  .stat-grid, .sector-card-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 540px) {
+  .stat-card { padding: 12px; }
+  .sector-card-grid { grid-template-columns: 1fr; }
+}
+#workspace-tabs { min-width: 0 !important; width: 100%; max-width: 100%; }
+.farm-main, .farm-summary { min-width: 0 !important; max-width: 100%; }
+.farm-canvas { width: 100%; max-width: 100%; min-width: 0; contain: inline-size; box-sizing: border-box; }

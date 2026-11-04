@@ -1,0 +1,5 @@
+tramo,longitud_m,revestido_0_1,permeabilidad_0_1,indice_fuga_0_1,sedimento_0_1,costo_reparacion_ars
+Tramo A,450,0,0.55,0.25,0.20,850000
+Tramo B,800,0,0.60,0.55,0.45,1200000
+Tramo C,350,1,0.35,0.20,0.15,650000
+Tramo D,900,0,0.65,0.60,0.35,1550000
