@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import partial
+import json
 from pathlib import Path
 
 import gradio as gr
@@ -9,17 +10,20 @@ import pandas as pd
 
 from core.ai_models import build_models
 from core.agents import normalize_channels, normalize_sectors
-from core.decision import build_protocol_trace, register_human_decision
+from core.decision import (AGREE, EDIT_COLUMNS, REPAIR_NO, REPAIR_PART, SAVED_DECISIONS, WATER_CHANGE, WATER_PART, build_parts, parts_changed, parts_summary, water_edit_table, build_protocol_trace, decision_record, decisions_view, load_decisions,
+                           register_human_decision, save_decision)
+from core.explicacion_ia import explain_turn, is_unavailable, opine_on_objection, revise_report, split_report
 from core.farm import apply_geometry, channel_registry, load_farm, overlap_warnings, save_farm
 from core.farm_map import farm_map_html, recommendation_html, sector_detail_html
 from core.simulation import add_sector, input_snapshot, remove_sector, simulate_turn
 from core.synthetic_data import DEFAULT_CHANNELS, DEFAULT_SECTORS, SECTOR_COLUMNS, scenario_data
-from core.visuals import (architecture_html, compact_sectors, diagnostic_table, feature_importance_figure,
-                          ia_detail, model_description, priority_figure, proposal_view, repair_view, sensor_detail, sensor_twin_figure,
+from core.visuals import (diagnostic_table, feature_importance_figure,
+                          ia_detail, ia_stepper_html, loss_bars_html, model_description, reasoning_html, parts_comparison_html, repair_cards_html, repair_plan_html, report_kpis_html, water_bars_html, water_plan_html, priority_figure, repair_view, sensor_detail, sensor_twin_figure,
                           summary_html, water_route, sector_cards_html, operational_info)
 
 MODELS = build_models()
 CSS_PATH = Path(__file__).resolve().parent / "assets" / "dashboard.css"
+CONFIRM_SAVE, CONFIRM_REDO = "CONFIRMAR Y GUARDAR", "REHACER EL INFORME CON MIS CAMBIOS"
 
 
 def analyze_inputs(*args):
@@ -112,7 +116,6 @@ def render_dashboard(sectors, selected, settings, scenario):
     if selected not in names:
         selected = names[0]
     p = result["priority"]
-    proposal = proposal_view(result)
     output = {
         sectors_state: sectors, result_state: result, scenario_state: scenario,
         sector_selector: gr.update(choices=names, value=selected),
@@ -121,25 +124,48 @@ def render_dashboard(sectors, selected, settings, scenario):
         farm_canvas: farm_map_html(sectors, settings[7], result, selected),
         summary_map: farm_map_html(sectors, settings[7], result, selected, canvas_id="summary"),
         map_detail: sector_detail_html(sectors, settings[7], result, selected),
-        map_notice: layout_notice(sectors), sector_config_table: sectors,
-        current_recommendation: recommendation_html(result), human_recommendation: recommendation_html(result),
+        map_notice: layout_notice(sectors),
+        current_recommendation: recommendation_html(result), human_recommendation: water_plan_html(result), repair_summary: repair_plan_html(result),
         sector_cards: sector_cards_html(result), operation_info: operational_info(result),
-        overview: compact_sectors(sectors), summary_cards: summary_html(result, scenario, sectors),
-        diagnosis: diagnostic_table(result), proposal_table: proposal,
+        summary_cards: summary_html(result, scenario, sectors),
+        diagnosis: diagnostic_table(result),
         sensor_plot: sensor_twin_figure(result["history"], selected), sensor_reading: sensor_detail(result, selected),
         ai_explanation: ia_detail(result, selected), risk_plot: priority_figure(p),
-        audit_table: repair_view(result), audit_detail: result["audit"], water_path: water_route(result["audit"]),
-        quality_table: result["quality"], full_priority: p, sensor_history: result["history"],
-        trace: build_protocol_trace(p, result["quality"]),
+        audit_table: repair_view(result), water_path: water_route(result["audit"]),
         status: f"**{scenario} · {len(sectors)} sectores · simulación actualizada.** El encargado revisa la propuesta.",
-        decision_status: "Decisión H1: PENDIENTE. Las compuertas se operan manualmente.",
-        decision_log: pd.DataFrame(), decision: "Sin respuesta", modified_order: "", note: "",
+        decision_log: decision_history(),
         add_button: gr.update(interactive=len(sectors) < 10),
         remove_button: gr.update(interactive=len(sectors) > 1),
     }
     output.update(form_updates(sectors, selected, settings[7]))
     output.update({component: value for component, value in zip(global_fields, settings)})
+    output.update(lab_updates(sectors, selected))
+    output.update(ia_reset())
     return output
+
+
+def lab_updates(sectors, selected):
+    row = sectors.set_index("sector").loc[selected]
+    connected = bool(row["sensor_disponible"])
+    humidity = row["humedad_suelo_pct"]
+    return {lab_connected: connected,
+            lab_humidity: gr.update(value=27.0 if pd.isna(humidity) else float(np.clip(humidity, 5, 45)), interactive=connected),
+            lab_irrigation: float(row["riego_simulado_mm_h"]), lab_noise: float(row["ruido_sensor_pct"])}
+
+
+def sensor_lab(sectors, selected, *values):
+    """Aplica los controles de la sonda al sector elegido y vuelve a analizar toda la finca."""
+    edits, (connected, humidity, irrigation_rate, noise_level) = list(values[:-4]), values[-4:]
+    at = SECTOR_COLUMNS.index
+    edits[at("sensor_disponible")] = bool(connected)
+    if connected:
+        edits[at("humedad_suelo_pct")] = humidity
+        # Al reconectar una sonda sin lecturas previas se usan los mismos valores iniciales que en el mapa.
+        for column, default in [("temperatura_suelo_c", 22), ("ec_ds_m", 1.2)]:
+            if edits[at(column)] is None:
+                edits[at(column)] = default
+    edits[at("ruido_sensor_pct")], edits[at("riego_simulado_mm_h")] = noise_level, irrigation_rate
+    return update_dashboard("Ejecutar", sectors, selected, *edits)
 
 
 def update_dashboard(action, sectors, selected, *values):
@@ -186,15 +212,14 @@ def invalidate(sectors, channel_rows=None, selected=None):
             summary_map: farm_map_html(sectors, channel_rows, None, canvas_id="summary"),
             map_detail: sector_detail_html(sectors, channel_rows, None, selected),
             map_notice: "Cambios pendientes. Analizá o guardá la configuración para aplicarlos.",
-            current_recommendation: recommendation_html(None), human_recommendation: recommendation_html(None),
+            current_recommendation: recommendation_html(None), human_recommendation: water_plan_html(None), repair_summary: repair_plan_html(None),
             sector_cards: sector_cards_html(None), operation_info: operational_info(None),
             status: "**Cambios pendientes.** Ejecutá la simulación para aplicar el formulario y actualizar los resultados.",
-            diagnosis: diagnostic_table(None), proposal_table: pd.DataFrame(),
+            diagnosis: diagnostic_table(None),
             sensor_plot: sensor_twin_figure(None), sensor_reading: sensor_detail(None, None),
             ai_explanation: ia_detail(None, None), risk_plot: None, audit_table: pd.DataFrame(),
-            water_path: water_route(None), audit_detail: pd.DataFrame(), quality_table: pd.DataFrame(), full_priority: pd.DataFrame(),
-            sensor_history: pd.DataFrame(), trace: pd.DataFrame(), decision_log: pd.DataFrame(),
-            decision_status: "Resultados pendientes. Volvé a simular antes de registrar H1."}
+            water_path: water_route(None), decision_log: decision_history(), **ia_reset(),
+            decision_status: "Hay cambios sin analizar. Volvé a analizar la finca antes de decidir."}
 
 
 def select_sector(selected, sectors, result, channel_rows):
@@ -206,6 +231,7 @@ def select_sector(selected, sectors, result, channel_rows):
                    sensor_plot: sensor_twin_figure(result["history"] if result else None, selected),
                    sensor_reading: sensor_detail(result, selected),
                    diagnosis_selector: gr.update(value=selected), ai_explanation: ia_detail(result, selected)})
+    output.update(lab_updates(sectors, selected))
     return output
 
 
@@ -216,13 +242,162 @@ def toggle_sensor(available, sectors, channel_rows, selected):
     return output
 
 
-def record_current(decision, order, note, state, sectors, selected, *values):
+def decision_history():
     try:
-        form_values, geometry, settings, _ = split_edits(values)
+        return decisions_view(load_decisions())
+    except ValueError:
+        return decisions_view([])
+
+
+def ia_reset():
+    """Cada análisis nuevo vuelve al comienzo: un informe viejo no se puede aceptar sobre datos nuevos."""
+    return {ia_stepper: ia_stepper_html(1), ia_step1: gr.update(visible=True), ia_step2: gr.update(visible=False), ia_step3: gr.update(visible=False),
+            claude_explanation: "", ia_report: "", ia_how: gr.update(visible=False), next_button: gr.update(visible=False),
+            explain_button: gr.update(value="CONSULTAR A LA IA", interactive=True), ia_exchanges: [], ia_parts: None,
+            water_choice: gr.update(value=None, interactive=True), repair_choice: gr.update(value=None, interactive=True),
+            water_edit_box: gr.update(visible=False), human_recommendation: gr.update(visible=True), ia_actions: gr.update(visible=True),
+            ia_objection: gr.update(visible=False), objection_part: gr.update(choices=[], value=None), confirm_button: gr.update(value=CONFIRM_SAVE, interactive=True),
+            ia_final_actions: gr.update(visible=True), ia_final_report: "", decision_final_status: "",
+            ia_thread: "", objection_text: "", decision_status: ""}
+
+
+def start_consult():
+    return {claude_explanation: "**La IA está analizando la finca.** Puede tardar hasta un minuto.",
+            explain_button: gr.update(interactive=False), ia_how: gr.update(visible=False), next_button: gr.update(visible=False)}
+
+
+def consult_ia(result, scenario, hours=8):
+    report = explain_turn(result, scenario)
+    if result is None:
+        return {claude_explanation: report, explain_button: gr.update(interactive=True)}
+    failed = is_unavailable(report)
+    sections = split_report(report)
+    # Si faltara algún título, el informe entero va a Resumen para no perder nada.
+    summary = sections.get("Datos analizados", "" if failed else report)
+    return {claude_explanation: report if failed else "", ia_report: "" if failed else report,
+            rep_summary: summary, rep_review: sections.get("Datos a revisar", ""), rep_losses: sections.get("Pérdidas significativas", ""),
+            rep_water: sections.get("Cómo distribuir el agua", ""), rep_repairs: sections.get("Inversión en reparaciones", ""),
+            rep_how: sections.get("Cómo se llegó a esto", ""), ia_kpis: report_kpis_html(result), ia_loss_bars: loss_bars_html(result),
+            ia_water_bars: water_bars_html(result), ia_repairs: repair_cards_html(result), ia_reasoning: reasoning_html(result),
+            water_edit: water_edit_table(result), water_total: water_total_text(water_edit_table(result), hours), ia_how: gr.update(visible=True), next_button: gr.update(visible=True),
+            explain_button: gr.update(value="VOLVER A CONSULTAR", interactive=True)}
+
+
+def go_to_step(step):
+    return {ia_stepper: ia_stepper_html(step), ia_step1: gr.update(visible=step == 1), ia_step2: gr.update(visible=step == 2), ia_step3: gr.update(visible=step == 3)}
+
+
+def on_parts_change(water, repair):
+    changing = water == WATER_CHANGE
+    parts = [name for name, disagreed in [(WATER_PART, changing), (REPAIR_PART, repair == REPAIR_NO)] if disagreed]
+    return {water_edit_box: gr.update(visible=changing), human_recommendation: gr.update(visible=not changing), ia_objection: gr.update(visible=bool(parts)),
+            objection_part: gr.update(choices=parts, value=parts[0] if parts else None),
+            confirm_button: gr.update(value=CONFIRM_REDO if parts else CONFIRM_SAVE, interactive=True)}
+
+
+def water_total_text(table, hours):
+    minutes = pd.to_numeric(pd.DataFrame(table).get(EDIT_COLUMNS[2]), errors="coerce").fillna(0).sum()
+    turn = float(hours) * 60
+    return f"**Total: {minutes:.0f} de {turn:.0f} minutos del turno.**" + ("" if abs(minutes - turn) <= 1 else " Ajustá los minutos para que coincidan.")
+
+
+def start_opinion():
+    return {send_objection: gr.update(value="LA IA ESTÁ RESPONDIENDO", interactive=False)}
+
+
+def thread_markdown(exchanges):
+    return "\n\n---\n\n".join(f"**Vos, sobre {e['parte'].lower()}:** {e['objecion']}\n\n**IA:**\n\n{e['opinion']}" for e in exchanges)
+
+
+def ask_opinion(part, objection, table, report, exchanges, result, scenario):
+    done = {send_objection: gr.update(value="PEDIR OPINIÓN A LA IA", interactive=True)}
+    if not (objection or "").strip():
+        gr.Warning("Escribí qué no te convence antes de enviarlo.")
+        return done
+    previous = [e for e in exchanges if not is_unavailable(e["opinion"])]
+    proposed = None
+    if part == WATER_PART:
+        proposed = json.loads(pd.DataFrame(table)[[EDIT_COLUMNS[0], EDIT_COLUMNS[2]]].to_json(orient="records", force_ascii=False))
+    opinion = opine_on_objection(result, scenario, report or "", objection.strip(), previous, part=part, proposed=proposed)
+    exchanges = exchanges + [{"parte": part, "objecion": objection.strip(), "opinion": opinion}]
+    return {**done, ia_exchanges: exchanges, ia_thread: thread_markdown(exchanges), objection_text: ""}
+
+
+def closed_controls():
+    return {ia_actions: gr.update(visible=False), ia_objection: gr.update(visible=False), water_edit_box: gr.update(visible=False),
+            human_recommendation: gr.update(visible=True), water_choice: gr.update(interactive=False), repair_choice: gr.update(interactive=False)}
+
+
+def start_confirm():
+    return {confirm_button: gr.update(value="PROCESANDO", interactive=False)}
+
+
+def warn(message, output):
+    """Un dato inválido se avisa sin error: gr.Error tapa todos los componentes y deja trabado el botón."""
+    gr.Warning(message)
+    return output
+
+
+def confirm_parts(water, repair, table, report, exchanges, state, sectors, selected, *values):
+    restored = {confirm_button: gr.update(interactive=True)}
+    if state is None:
+        return warn("Hay cambios sin analizar. Volvé a analizar la finca antes de decidir.", restored)
+    if water is None or repair is None:
+        return warn("Respondé las dos partes antes de confirmar.", restored)
+    try:
+        _, _, settings, scenario = split_edits(values)
+        parts = build_parts(water, repair, table, exchanges, state, float(settings[6]) * 60)
+        if parts_changed(parts):
+            # La validación del registro se adelanta para no gastar una consulta sobre datos desactualizados.
+            current, name = commit_sector(sectors, selected, split_edits(values)[0])
+            if state["inputs"] != input_snapshot(*analysis_args(apply_geometry(current, name, split_edits(values)[1]), settings)):
+                return warn("Las entradas cambiaron. Volvé a analizar la finca antes de decidir.", restored)
+        else:
+            _, history, _ = record_current("Aceptar", "", "", report, exchanges, state, sectors, selected, *values, parts=parts)
+            return {**closed_controls(), decision_status: "**Propuesta aceptada y guardada en el historial.** Las compuertas se operan a mano.",
+                    decision_log: history, ia_history: gr.update(open=True)}
+    except gr.Error as exc:
+        return warn(exc.message, restored)
+    except (ValueError, TypeError) as exc:
+        return warn(str(exc), restored)
+    return {**go_to_step(3), ia_parts: parts, ia_comparison: parts_comparison_html(parts), decision_final_status: "",
+            ia_final_report: revise_report(state, scenario, report or "", parts, exchanges), ia_final_actions: gr.update(visible=True)}
+
+
+def save_parts(parts, final_report, report, exchanges, state, sectors, selected, *values):
+    try:
+        _, history, _ = record_current("Modificar", parts_summary(parts), "", report, exchanges, state, sectors, selected, *values, parts=parts, final_report=final_report)
+    except gr.Error as exc:
+        return warn(exc.message, {decision_final_status: ""})
+    return {**closed_controls(), decision_final_status: "**Guardado en el historial con tus cambios.** Las compuertas se operan a mano.",
+            decision_log: history, ia_final_actions: gr.update(visible=False), ia_history: gr.update(open=True)}
+
+
+def reject_all(report, exchanges, state, sectors, selected, *values):
+    reason = exchanges[-1]["objecion"] if exchanges else "Sin motivo indicado"
+    try:
+        _, history, _ = record_current("Rechazar", "", reason, report, exchanges, state, sectors, selected, *values)
+    except gr.Error as exc:
+        return warn(exc.message, {decision_status: ""})
+    return {**closed_controls(), decision_status: "**Propuesta rechazada. No se guardó nada.**", decision_log: history}
+
+
+def record_current(decision, order, note, report, exchanges, state, sectors, selected, *values, parts=None, final_report=""):
+    try:
+        form_values, geometry, settings, scenario = split_edits(values)
         current, current_name = commit_sector(sectors, selected, form_values)
         current = apply_geometry(current, current_name, geometry)
-        return human_decision(decision, order, note, state, *analysis_args(current, settings))
-    except (ValueError, TypeError) as exc:
+        status, _, trace = human_decision(decision, order, note, state, *analysis_args(current, settings))
+        if decision in SAVED_DECISIONS:
+            # Un aviso de error de la API no es contenido de la IA: no se guarda como tal.
+            kept = [e if not is_unavailable(e["opinion"]) else {**e, "opinion": None} for e in exchanges]
+            save_decision(decision_record(decision, order, note, scenario, state, "" if is_unavailable(report) else report, kept, parts,
+                                          "" if is_unavailable(final_report) else final_report))
+            status += " **Guardada en el historial.**"
+        elif decision == "Rechazar":
+            status += " **No se guardó ninguna propuesta.**"
+        return status, decision_history(), trace
+    except (ValueError, TypeError, OSError) as exc:
         raise gr.Error(str(exc)) from exc
 
 
@@ -272,6 +447,9 @@ with gr.Blocks(title="Riego Intrafinca · Mendoza", analytics_enabled=False) as 
     result_state = gr.State(INITIAL)
     scenario_state = gr.State("Normal")
     plot_revision = gr.State(0)
+    ia_exchanges = gr.State([])
+    ia_report = gr.State("")
+    ia_parts = gr.State(None)
     gr.Markdown("# Asistente Inteligente de Riego Intrafinca\nMendoza · Planificación del turno y revisión de pérdidas.")
     gr.HTML('<div class="demo-banner"><strong>DATOS DE PRUEBA — DEMOSTRACIÓN ACADÉMICA</strong><span>Sensores virtuales y datos sintéticos. El encargado decide; las compuertas se operan manualmente.</span></div>')
     with gr.Row(elem_id="run-toolbar"):
@@ -340,25 +518,15 @@ with gr.Blocks(title="Riego Intrafinca · Mendoza", analytics_enabled=False) as 
             with gr.Accordion("MVP actual e implementación real futura", open=False):
                 gr.Markdown("**MVP actual:** croquis digital + sensor virtual + datos sintéticos → IA → dashboard.\n\n**Implementación real futura:** polígono de finca + sensores físicos + clima + datos satelitales → API → IA → dashboard.\n\nEl MVP valida la arquitectura y la interacción antes de incorporar hardware y georreferenciación real. No demuestra precisión de campo.")
 
-        with gr.Tab("FINCA", id="finca") as finca_tab:
-            gr.Markdown("## Finca y sensores\nLecturas virtuales y diagnóstico resumido. La edición de sectores se realiza en Mapa de la finca.")
-            sector_cards = gr.HTML(sector_cards_html(INITIAL))
-            with gr.Row():
-                sector_selector = gr.Dropdown(NAMES, value=FIRST, label="Sector para editar y visualizar")
-                edit_map_button = gr.Button("CONFIGURAR EN EL MAPA")
-            with gr.Row():
-                with gr.Column(scale=1, min_width=280):
-                    sensor_reading = gr.HTML(sensor_detail(INITIAL, FIRST))
-                with gr.Column(scale=2, min_width=320):
-                    sensor_plot = gr.Plot(value=sensor_twin_figure(INITIAL["history"], FIRST), label="Evolución del sector elegido")
-
-        with gr.Tab("CLIMA Y SIMULACIÓN", id="clima"):
-            gr.Markdown("## Clima y simulación\nLos presets aplican datos y analizan. Conservan la distribución, nombres y canales asociados de los sectores. Restaurar vuelve a la finca base.")
+        with gr.Tab("CLIMA Y SIMULACIÓN", id="clima") as finca_tab:
+            gr.Markdown("## Clima y simulación\nCambiá el clima de la finca o la sonda de un sector y mirá cómo responde el suelo. Son datos de prueba, no mediciones de campo.")
+            gr.Markdown("### Escenarios rápidos\nCada uno carga sus datos y analiza. Conservan la distribución, los nombres y los canales de los sectores.")
             with gr.Row():
                 normal_button = gr.Button("NORMAL")
                 zonda_button = gr.Button("ZONDA / ESTRÉS")
                 failure_button = gr.Button("FALLA SENSOR")
                 canal_button = gr.Button("CANAL DETERIORADO")
+            gr.Markdown("### Clima de la finca\nVale para todos los sectores. La lluvia y la ET0 son valores diarios.")
             with gr.Row():
                 temp = gr.Number(value=24, minimum=0, maximum=42, label="Temperatura ambiente (°C) · 0–42")
                 rh = gr.Number(value=40, minimum=10, maximum=90, label="Humedad relativa (%) · 10–90")
@@ -366,11 +534,29 @@ with gr.Blocks(title="Riego Intrafinca · Mendoza", analytics_enabled=False) as 
             with gr.Row():
                 rain = gr.Number(value=0, minimum=0, maximum=40, label="Lluvia (mm/día) · 0–40")
                 et0 = gr.Number(value=5.5, minimum=1, maximum=12, label="ET0 (mm/día) · 1–12")
-                hours = gr.Number(value=12, minimum=0, maximum=48, precision=0, label="Horizonte del sensor (horas) · 0–48")
-            gr.Markdown("Lluvia y ET0 se convierten a tasas horarias. El horizonte del sensor es independiente del turno.")
             with gr.Row():
                 climate_run = gr.Button("ANALIZAR CON ESTE CLIMA", variant="primary")
                 reset_button = gr.Button("RESTAURAR ESCENARIO BASE")
+            gr.Markdown("### Sonda del sector\nLa sonda mide el efecto del clima sobre el suelo de un sector.")
+            with gr.Row():
+                sector_selector = gr.Dropdown(NAMES, value=FIRST, label="Sector de la sonda")
+                edit_map_button = gr.Button("EDITAR LA FICHA COMPLETA EN EL MAPA")
+            with gr.Row():
+                with gr.Column(scale=1, min_width=300):
+                    sensor_reading = gr.HTML(sensor_detail(INITIAL, FIRST))
+                with gr.Column(scale=2, min_width=320):
+                    sensor_plot = gr.Plot(value=sensor_twin_figure(INITIAL["history"], FIRST), label="Humedad hora por hora")
+            gr.Markdown("Soltá un control y la finca se vuelve a analizar con ese cambio en el sector elegido.")
+            with gr.Row():
+                lab_connected = gr.Checkbox(value=True, label="Sonda conectada", info="Desconectala para ver cómo trabaja la IA sin medición.")
+                lab_humidity = gr.Slider(5, 45, value=float(BASE[7].iloc[0]["humedad_suelo_pct"]), step=0.5, label="Humedad del suelo al empezar (%)", info="Punto de partida de la simulación.")
+                hours = gr.Slider(0, 48, value=12, step=1, label="Horas simuladas", info="Tiempo que miden las sondas. Vale para todos los sectores.")
+            with gr.Row():
+                lab_irrigation = gr.Slider(0, 20, value=0, step=0.5, label="Riego de prueba (mm por hora)", info="Agua hipotética: no riega ni registra nada.")
+                lab_noise = gr.Slider(0, 2, value=0.2, step=0.1, label="Imprecisión de la sonda (puntos %)", info="Cuánto varía cada lectura respecto del valor real.")
+                lab_button = gr.Button("VOLVER A MEDIR", variant="primary")
+            gr.Markdown("### Todos los sectores")
+            sector_cards = gr.HTML(sector_cards_html(INITIAL))
 
         with gr.Tab("CANALES", id="canales"):
             gr.Markdown("## Canales y pérdidas\nRecorrido lógico del agua y reparación recomendada. La IA predice porcentajes; los volúmenes y el costo-beneficio son cálculos.")
@@ -386,63 +572,110 @@ with gr.Blocks(title="Riego Intrafinca · Mendoza", analytics_enabled=False) as 
             gr.Markdown("**Supuesto:** reparar recupera el 70% de la pérdida local. Litros = caudal × horas × 3600. Rentabilidad = litros recuperables / costo × 1000. Sin validación de campo.")
 
         with gr.Tab("IA", id="ia") as ia_tab:
-            gr.Markdown("## Qué hizo la IA\nRandom Forest estima riesgo con la última lectura virtual. Sin sensor, otro modelo estima riesgo a partir de clima e historial; nunca inventa humedad.")
-            diagnosis_selector = gr.Dropdown(NAMES, value=FIRST, label="Sector del diagnóstico")
-            ai_explanation = gr.Markdown(ia_detail(INITIAL, FIRST))
-            diagnosis = gr.Dataframe(value=diagnostic_table(INITIAL), interactive=False, label="Diagnóstico por sector", max_height=300)
-            with gr.Accordion("Variables más importantes", open=True):
-                importance_model = gr.Radio(["Riesgo con sensor", "Riesgo sin sensor", "Pérdidas del canal"], value="Riesgo con sensor", label="Modelo a visualizar")
-                importance_plot = gr.Plot(value=feature_importance_figure(MODELS.sector_with_sensor), label="Importancia global real del modelo")
-            with gr.Accordion("Modelos, métricas y limitaciones", open=False):
-                gr.Markdown(model_description(MODELS))
-                risk_plot = gr.Plot(value=priority_figure(INITIAL["priority"]), label="Riesgo por sector")
-
-        with gr.Tab("DECISIÓN HUMANA", id="humano"):
-            human_recommendation = gr.HTML(recommendation_html(INITIAL))
-            gr.Markdown("H1: aceptar, modificar o rechazar. H2: compuertas manuales. H3: inspeccionar, posponer o decidir manualmente ante datos insuficientes. Registro temporal en pantalla.")
-            decision_status = gr.Markdown("Decisión H1: PENDIENTE.")
-            with gr.Row():
-                decision = gr.Dropdown(["Aceptar", "Modificar", "Rechazar", "Sin respuesta"], value="Sin respuesta", label="Decisión del encargado")
-                modified_order = gr.Textbox(label="Nuevo orden humano (si modifica)")
-            note = gr.Textbox(label="Observación / motivo del rechazo")
-            decision_button = gr.Button("REGISTRAR DECISIÓN H1")
-            decision_log = gr.Dataframe(interactive=False, label="Registro humano temporal")
-            with gr.Accordion("Ver trazabilidad completa", open=False):
-                trace = gr.Dataframe(value=build_protocol_trace(INITIAL["priority"], INITIAL["quality"]), interactive=False, label="Trazabilidad temporal existente", max_height=300)
-
-        with gr.Tab("DATOS TÉCNICOS", id="datos"):
-            gr.Markdown("## Datos técnicos\nDetalle completo conservado para revisión y defensa. Todos los datos de finca y sensores son de prueba.")
-            with gr.Accordion("Sectores y configuración del croquis", open=False):
-                sector_config_table = gr.Dataframe(value=BASE[7], interactive=False, label="Configuración de sectores · completa", max_height=300)
-                overview = gr.Dataframe(value=compact_sectors(BASE[7]), interactive=False, label="Sectores de la finca · valores iniciales", max_height=280)
-            with gr.Accordion("Lecturas horarias y calidad", open=False):
-                sensor_history = gr.Dataframe(value=INITIAL["history"], interactive=False, label="Historial virtual", max_height=300)
-                quality_table = gr.Dataframe(value=INITIAL["quality"], interactive=False, label="Calidad de los datos")
-            with gr.Accordion("Predicciones y prioridades completas", open=False):
-                full_priority = gr.Dataframe(value=INITIAL["priority"], interactive=False, label="Detalle del modelo y priorización", max_height=300)
-                proposal_table = gr.Dataframe(value=proposal_view(INITIAL), interactive=False, label="Propuesta para revisar", max_height=280)
-            with gr.Accordion("Balance completo de canales", open=False):
-                audit_detail = gr.Dataframe(value=INITIAL["audit"], interactive=False, label="Balance secuencial calculado", max_height=280)
-
-        with gr.Tab("ARQUITECTURA", id="arquitectura"):
-            gr.Markdown("## Cómo funciona\nLa finca organiza sectores y sensores; la IA estima riesgo y pérdidas; el encargado decide.")
-            gr.HTML(architecture_html())
-            with gr.Row():
-                gr.Markdown("### MVP actual\nCroquis digital + sensores virtuales + datos sintéticos → IA → dashboard.")
-                gr.Markdown("### Implementación real futura\nPolígono real + sensores físicos + clima + datos satelitales → API → IA → dashboard.")
-            gr.Markdown("El MVP valida la arquitectura y la interacción antes de incorporar hardware y georreferenciación real. No hay GIS, GPS, imágenes satelitales ni hardware conectados.\n\n**Limitaciones:** datos sintéticos, sin validación de campo, Sentinel-2 no mide humedad directamente, compuertas manuales y meta del 15% pendiente de validación.")
+            gr.Markdown("## IA y decisión\nPrimero leé el informe completo y cómo se llegó a él. Después decidís si estás de acuerdo.")
+            with gr.Column(elem_classes="ia-wizard"):
+                ia_stepper = gr.HTML(ia_stepper_html(1))
+                with gr.Column(elem_classes="ia-step") as ia_step1:
+                    with gr.Row():
+                        explain_button = gr.Button("CONSULTAR A LA IA", variant="primary")
+                        next_button = gr.Button("SIGUIENTE", variant="primary", visible=False)
+                    claude_explanation = gr.Markdown("", elem_classes="ai-report")
+                    with gr.Column(visible=False) as ia_how:
+                        ia_kpis = gr.HTML("")
+                        with gr.Tabs(elem_id="report-tabs"):
+                            with gr.Tab("Resumen"):
+                                with gr.Row():
+                                    with gr.Column(min_width=300):
+                                        rep_summary = gr.Markdown("", elem_classes="report-text")
+                                    with gr.Column(min_width=300):
+                                        gr.Markdown("#### Datos a revisar")
+                                        rep_review = gr.Markdown("", elem_classes="report-text")
+                            with gr.Tab("Pérdidas"):
+                                with gr.Row():
+                                    with gr.Column(min_width=300):
+                                        ia_loss_bars = gr.HTML("")
+                                    with gr.Column(min_width=300):
+                                        rep_losses = gr.Markdown("", elem_classes="report-text")
+                            with gr.Tab("Reparto del agua"):
+                                with gr.Row():
+                                    with gr.Column(min_width=300):
+                                        ia_water_bars = gr.HTML("")
+                                    with gr.Column(min_width=300):
+                                        rep_water = gr.Markdown("", elem_classes="report-text")
+                            with gr.Tab("Reparaciones"):
+                                with gr.Row():
+                                    with gr.Column(min_width=300):
+                                        ia_repairs = gr.HTML("")
+                                    with gr.Column(min_width=300):
+                                        rep_repairs = gr.Markdown("", elem_classes="report-text")
+                            with gr.Tab("Cómo llegó"):
+                                with gr.Row():
+                                    with gr.Column(min_width=300):
+                                        rep_how = gr.Markdown("", elem_classes="report-text")
+                                    with gr.Column(min_width=300):
+                                        ia_reasoning = gr.HTML("")
+                            with gr.Tab("Modelos") as ia_models_tab:
+                                with gr.Row():
+                                    with gr.Column(min_width=300):
+                                        importance_model = gr.Radio(["Riesgo con sensor", "Riesgo sin sensor", "Pérdidas del canal"], value="Riesgo con sensor", label="Variables que más influyen")
+                                        importance_plot = gr.Plot(value=feature_importance_figure(MODELS.sector_with_sensor), label="Importancia global real del modelo")
+                                    with gr.Column(min_width=300):
+                                        diagnosis_selector = gr.Dropdown(NAMES, value=FIRST, label="Diagnóstico del sector")
+                                        ai_explanation = gr.Markdown(ia_detail(INITIAL, FIRST), elem_classes="report-text")
+                                with gr.Accordion("Tabla de diagnóstico, métricas y riesgo por sector", open=False):
+                                    diagnosis = gr.Dataframe(value=diagnostic_table(INITIAL), interactive=False, label="Diagnóstico por sector", max_height=300)
+                                    gr.Markdown(model_description(MODELS))
+                                    risk_plot = gr.Plot(value=priority_figure(INITIAL["priority"]), label="Riesgo por sector")
+                        gr.Markdown("Redactado por Claude a partir de datos sintéticos. Los números los calcularon los modelos locales. La decisión es del encargado.", elem_classes="report-note")
+                with gr.Column(visible=False, elem_classes="ia-step") as ia_step2:
+                    with gr.Row():
+                        with gr.Column(scale=3, min_width=340):
+                            human_recommendation = gr.HTML(water_plan_html(INITIAL))
+                            with gr.Column(visible=False) as water_edit_box:
+                                water_edit = gr.Dataframe(value=water_edit_table(INITIAL), headers=EDIT_COLUMNS, datatype=["str", "number", "number"], static_columns=[0, 1],
+                                                          interactive=True, label="Reparto del agua: editá la columna Tus minutos", max_height=280)
+                                water_total = gr.Markdown("")
+                            water_choice = gr.Radio([AGREE, WATER_CHANGE], value=None, label="¿Estás de acuerdo con el reparto?")
+                            repair_summary = gr.HTML(repair_plan_html(INITIAL))
+                            repair_choice = gr.Radio([AGREE, REPAIR_NO], value=None, label="¿Harías esta reparación?")
+                        with gr.Column(scale=2, min_width=300):
+                            gr.Markdown("### Decidí cada parte\nPodés aceptar una y cambiar la otra. Lo que confirmes se guarda con fecha.")
+                            with gr.Column(visible=False) as ia_objection:
+                                objection_part = gr.Radio([], value=None, label="Hablar con la IA sobre")
+                                ia_thread = gr.Markdown("", elem_classes=["ai-report", "ai-thread"])
+                                objection_text = gr.Textbox(lines=2, label="¿Qué no te convence? (opcional)", placeholder="Por ejemplo: el Sector C es olivo y aguanta mejor la sequía")
+                                send_objection = gr.Button("PEDIR OPINIÓN A LA IA")
+                            decision_status = gr.Markdown("")
+                            with gr.Column() as ia_actions:
+                                confirm_button = gr.Button(CONFIRM_SAVE, variant="primary")
+                                reject_button = gr.Button("RECHAZAR TODO SIN GUARDAR")
+                            back_button = gr.Button("VOLVER AL INFORME")
+                with gr.Column(visible=False, elem_classes="ia-step") as ia_step3:
+                    with gr.Row():
+                        with gr.Column(scale=2, min_width=300):
+                            ia_comparison = gr.HTML("")
+                        with gr.Column(scale=3, min_width=320):
+                            gr.Markdown("### Informe final con tus cambios")
+                            ia_final_report = gr.Markdown("", elem_classes=["ai-report", "report-final"])
+                    decision_final_status = gr.Markdown("")
+                    with gr.Row() as ia_final_actions:
+                        ia_save_button = gr.Button("GUARDAR EN EL HISTORIAL", variant="primary")
+                        edit_button = gr.Button("VOLVER A EDITAR")
+                with gr.Accordion("Historial de propuestas guardadas", open=False) as ia_history:
+                    decision_log = gr.Dataframe(value=decision_history(), interactive=False, label="Propuestas guardadas", max_height=200)
 
     form_fields = [sector_name, crop, area, sensor_available, moisture, soil_temp, ec, ndvi, ndvi_age,
                    days, no_irrigation, last_irrigation, restriction, noise, irrigation]
     geometry_fields = [map_x, map_y, map_width, map_height, map_channel]
     global_fields = [temp, rh, wind, rain, et0, flow, turn_hours, channels, hours]
+    lab_fields = [lab_connected, lab_humidity, lab_irrigation, lab_noise]
     edit_inputs = [sectors_state, sector_selector] + form_fields + geometry_fields + global_fields + [scenario_state]
     all_outputs = [sectors_state, result_state, scenario_state, sector_selector, diagnosis_selector,
-                   overview, summary_cards, diagnosis, proposal_table, sensor_plot, sensor_reading,
-                   ai_explanation, risk_plot, audit_table, audit_detail, water_path, quality_table, full_priority,
-                   sensor_history, trace, status, decision_status, decision_log, decision, modified_order,
-                   note, add_button, remove_button, map_selector, farm_canvas, summary_map, map_detail, map_notice,
-                   sector_config_table, current_recommendation, human_recommendation, sector_cards, operation_info] + form_fields + geometry_fields + global_fields
+                   summary_cards, diagnosis, sensor_plot, sensor_reading,
+                   ai_explanation, risk_plot, audit_table, water_path, status, decision_status, decision_log, add_button, remove_button, map_selector, farm_canvas, summary_map, map_detail, map_notice,
+                   current_recommendation, human_recommendation, sector_cards, operation_info, claude_explanation,
+                   ia_stepper, ia_step1, ia_step2, ia_step3, ia_how, next_button, ia_report, explain_button, ia_exchanges, ia_parts, water_choice, repair_choice, water_edit_box,
+                   repair_summary, ia_actions, ia_objection, objection_part, confirm_button, ia_final_actions, ia_final_report, decision_final_status, ia_thread, objection_text] + form_fields + geometry_fields + global_fields + lab_fields
     for button, action, api in [
         (run_button, "Ejecutar", "simular"), (save_button, "Ejecutar", "guardar_sector"),
         (climate_run, "Ejecutar", False), (add_button, "Agregar", "agregar_sector"),
@@ -454,8 +687,10 @@ with gr.Blocks(title="Riego Intrafinca · Mendoza", analytics_enabled=False) as 
         (load_config_button, "Cargar guardada", "cargar_configuracion"),
     ]:
         button.click(partial(update_dashboard, action), inputs=edit_inputs, outputs=all_outputs, api_name=api, concurrency_id="dashboard", concurrency_limit=1)
+    for trigger in [lab_connected.input, lab_button.click] + [slider.release for slider in lab_fields[1:] + [hours]]:
+        trigger(sensor_lab, inputs=edit_inputs + lab_fields, outputs=all_outputs, api_name=False, concurrency_id="dashboard", concurrency_limit=1)
     for field in form_fields + global_fields:
-        if field is not sensor_available:
+        if field is not sensor_available and field is not hours:  # Las horas analizan al soltar el control.
             field.input(invalidate, inputs=[sectors_state, channels, sector_selector], outputs=all_outputs, queue=False, api_name=False)
     for field in geometry_fields:
         field.input(preview_geometry, inputs=[sectors_state, sector_selector, channels, result_state] + geometry_fields,
@@ -465,12 +700,36 @@ with gr.Blocks(title="Riego Intrafinca · Mendoza", analytics_enabled=False) as 
         selector.input(select_sector, inputs=[selector, sectors_state, result_state, channels], outputs=all_outputs, api_name="seleccionar_sector" if selector is map_selector else False)
     diagnosis_selector.input(ia_detail, inputs=[result_state, diagnosis_selector], outputs=ai_explanation, api_name=False)
     importance_model.change(importance_for, inputs=importance_model, outputs=importance_plot, api_name="importancia")
-    for tab, kind, plot in [(finca_tab, "sensor", sensor_plot), (ia_tab, "importance", importance_plot)]:
+    for tab, kind, plot in [(finca_tab, "sensor", sensor_plot), (ia_models_tab, "importance", importance_plot)]:
         tab.select(partial(refresh_plot, kind), inputs=[result_state, sector_selector, importance_model, plot_revision], outputs=[plot, plot_revision], api_name=False)
     for button in [view_map_button, edit_map_button]:
         button.click(lambda: gr.update(selected="mapa"), outputs=workspace_tabs, api_name=False)
-    decision_button.click(record_current, inputs=[decision, modified_order, note, result_state] + edit_inputs,
-                          outputs=[decision_status, decision_log, trace], api_name="decision_humana")
+    consult_outputs = [claude_explanation, explain_button, ia_how, next_button, ia_report, rep_summary, rep_review, rep_losses, rep_water,
+                       rep_repairs, rep_how, ia_kpis, ia_loss_bars, ia_water_bars, ia_repairs, ia_reasoning, water_edit, water_total]
+    explain_button.click(start_consult, outputs=consult_outputs, api_name=False).then(
+        consult_ia, inputs=[result_state, scenario_state, turn_hours], outputs=consult_outputs, api_name="explicar_ia")
+    ia_models_tab.select(lambda result: priority_figure(result["priority"]) if result else None, inputs=result_state, outputs=risk_plot, api_name=False)
+    step_outputs, to_top = [ia_stepper, ia_step1, ia_step2, ia_step3], "() => document.querySelector('.ia-wizard')?.scrollIntoView({behavior: 'smooth', block: 'start'})"
+    # El desplazamiento va en un paso aparte: combinado con la función de Python rompe el envío del evento.
+    next_button.click(partial(go_to_step, 2), outputs=step_outputs, api_name=False).then(None, js=to_top)
+    back_button.click(partial(go_to_step, 1), outputs=step_outputs, api_name=False).then(None, js=to_top)
+    edit_button.click(partial(go_to_step, 2), outputs=step_outputs, api_name=False).then(None, js=to_top)
+    parts_outputs = [water_edit_box, human_recommendation, ia_objection, objection_part, confirm_button]
+    for radio in [water_choice, repair_choice]:
+        radio.input(on_parts_change, inputs=[water_choice, repair_choice], outputs=parts_outputs, api_name=False, queue=False)
+    water_edit.change(water_total_text, inputs=[water_edit, turn_hours], outputs=water_total, api_name=False, queue=False)
+    opinion_outputs = [send_objection, ia_exchanges, ia_thread, objection_text]
+    send_objection.click(start_opinion, outputs=opinion_outputs, api_name=False).then(
+        ask_opinion, inputs=[objection_part, objection_text, water_edit, ia_report, ia_exchanges, result_state, scenario_state], outputs=opinion_outputs, api_name="opinion_ia")
+    context_inputs = [ia_report, ia_exchanges, result_state] + edit_inputs
+    closing_outputs = [ia_actions, ia_objection, water_edit_box, human_recommendation, water_choice, repair_choice, decision_log, ia_history]
+    confirm_outputs = closing_outputs + step_outputs + [decision_status, ia_parts, ia_comparison, decision_final_status, ia_final_report, ia_final_actions, confirm_button]
+    # El tercer paso restaura el texto del botón según lo que el usuario haya elegido.
+    confirm_button.click(start_confirm, outputs=confirm_button, api_name=False).then(
+        confirm_parts, inputs=[water_choice, repair_choice, water_edit] + context_inputs, outputs=confirm_outputs, api_name="decision_humana").then(
+        on_parts_change, inputs=[water_choice, repair_choice], outputs=parts_outputs, api_name=False).then(None, js=to_top)
+    ia_save_button.click(save_parts, inputs=[ia_parts, ia_final_report] + context_inputs, outputs=closing_outputs + [decision_final_status, ia_final_actions], api_name=False)
+    reject_button.click(reject_all, inputs=context_inputs, outputs=closing_outputs + [decision_status], api_name=False)
     gr.Markdown("Etapa 1 · Lozano → Siccardi → Sosa → Rivamar. Uso de IA: ChatGPT como apoyo; el equipo debe verificar supuestos y decisiones antes de entregar.")
 
 if __name__ == "__main__":

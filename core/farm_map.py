@@ -6,9 +6,31 @@ import pandas as pd
 
 from .farm import channel_registry
 
-SECTOR_COLORS = {"low": ("#e7f3e9", "#216c50"), "medium": ("#fff3d0", "#875c0b"),
-                 "high": ("#fde8e6", "#a73732"), "unknown": ("#edf0ee", "#65716e")}
-CHANNEL_COLORS = {"low": "#2875a0", "medium": "#a47516", "high": "#b3413e", "unknown": "#65716e"}
+BLOCK_COLORS = {"low": ("#86cf9b", "#4f9a67", "#3d8155", "#0d2a1c"), "medium": ("#f5c84c", "#cf9c1f", "#ad7f12", "#2e2000"),
+                "high": ("#ee7565", "#c84a3c", "#a5382c", "#330b07"), "unknown": ("#b9c2bd", "#8f9b95", "#77837d", "#1c2824")}
+CHANNEL_COLORS = {"low": "#17608a", "medium": "#c08a0c", "high": "#b3322e", "unknown": "#5a6663"}
+CHANNEL_INK = {"low": "#14506f", "medium": "#6e4a05", "high": "#8f2622", "unknown": "#3f524b"}
+ISO_X, ISO_Y = .87, .5
+ORIGIN = (126, 24)
+CANAL_X = -8
+
+
+def iso(x, y, z=0):
+    """Proyecta la cuadrícula relativa 0–100 a pantalla. Es un dibujo, no un cálculo geográfico."""
+    return round(ORIGIN[0] + (x - y) * ISO_X, 2), round(ORIGIN[1] + (x + y) * ISO_Y - z, 2)
+
+
+def poly(*corners):
+    return " ".join(f"{a},{b}" for a, b in corners)
+
+
+def path(*corners):
+    return "M" + " L".join(f"{a} {b}" for a, b in corners)
+
+
+def block_height(state, risk):
+    # Sin dato confiable el bloque queda bajo: la altura solo representa riesgo estimado.
+    return 3 if state == "unknown" else round(4 + float(risk) * .14, 2)
 
 
 def safe(value):
@@ -40,21 +62,27 @@ def farm_map_html(sectors, channels, result, selected=None, preview=False, canva
     risks, readings, audit = result_lookups(result)
     registry = channel_registry(channels)
     selected_id = next((row["sector_id"] for row in sectors.to_dict("records") if row["sector"] == selected), None)
-    svg = ['<svg viewBox="0 0 134 120" role="img" aria-label="Croquis de finca; sectores según riesgo y canales con pérdidas estimadas" xmlns="http://www.w3.org/2000/svg">',
-           '<title>Croquis de finca sin georreferenciación. El detalle se elige con el selector de sector.</title>',
+    svg = ['<svg viewBox="0 0 222 134" role="img" aria-label="Croquis isométrico de finca; sectores según riesgo y canales con pérdidas estimadas" xmlns="http://www.w3.org/2000/svg">',
+           '<title>Croquis isométrico sin georreferenciación. El detalle se elige con el selector de sector.</title>',
            '<defs><marker id="farm-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0 L10 5 L0 10" fill="#2875a0"/></marker></defs>',
-           '<rect x="28" y="9" width="100" height="100" rx="1.5" fill="#f7faf7" stroke="#bdccc1" stroke-width=".5"/>',
-           '<text x="78" y="6" font-size="2.8" text-anchor="middle" fill="#536961">FINCA · CUADRÍCULA RELATIVA 0–100</text>']
+           f'<polygon class="farm-slab-side" points="{poly(iso(0, 100), iso(100, 100), iso(100, 100, -2.5), iso(0, 100, -2.5))}"/>',
+           f'<polygon class="farm-slab-edge" points="{poly(iso(100, 0), iso(100, 100), iso(100, 100, -2.5), iso(100, 0, -2.5))}"/>',
+           f'<polygon class="farm-ground" points="{poly(iso(0, 0), iso(100, 0), iso(100, 100), iso(0, 100))}"/>']
     for value in [20, 40, 60, 80]:
-        svg.append(f'<path d="M{28 + value} 9 V109 M28 {9 + value} H128" stroke="#e2e9e3" stroke-width=".2"/>')
+        svg.append(f'<path class="farm-grid" d="{path(iso(value, 0), iso(value, 100))} {path(iso(0, value), iso(100, value))}"/>')
+    for x, y, label in [(90, -7, "X 0–100"), (107, 50, "Y 0–100")]:
+        a, b = iso(x, y)
+        svg.append(f'<text x="{a}" y="{b}" font-size="2.8" text-anchor="middle" class="farm-axis">{label}</text>')
     inlet = result["audit"].sort_values("orden_recorrido").iloc[0]["caudal_entrada_ls"] if result is not None else None
-    svg.append(f'<text x="1" y="5" font-size="2.4" fill="#256f99">ENTRADA {f"{inlet:.1f} L/s" if inlet is not None else "pendiente"}</text>')
-    svg.append('<path d="M22 7 V14" stroke="#2875a0" stroke-width="1" marker-end="url(#farm-arrow)"/>')
+    a, b = iso(CANAL_X, -9)
+    svg.append(f'<text x="{a - 3}" y="{b - 1}" font-size="3.3" font-weight="600" text-anchor="end" fill="#14506f">Entrada {f"{inlet:.1f} L/s" if inlet is not None else "pendiente"}</text>')
+    svg.append(f'<path d="{path(iso(CANAL_X, -9), iso(CANAL_X, -1))}" stroke="#2875a0" stroke-width="1.2" fill="none" marker-end="url(#farm-arrow)"/>')
     taps = {}
+    channel_svg = []
     for i, channel in enumerate(registry):
         cid = channel["canal_id"]
-        y0, y1 = 14 + i * 22, 36 + i * 22
-        taps[cid] = y1
+        t0, t1 = i * 25, (i + 1) * 25
+        taps[cid] = t1
         row = audit.get(cid)
         loss = row["perdida_ia_pct"] if row else None
         state = channel_state(loss)
@@ -62,44 +90,59 @@ def farm_map_html(sectors, channels, result, selected=None, preview=False, canva
         loss_text = f'{loss:.1f}% pérdida IA' if loss is not None else 'Sin resultado'
         flow_text = f'Sale {row["caudal_salida_ls"]:.1f} L/s' if row else 'Caudal pendiente'
         label = str(channel["tramo"])
-        svg.append(f'<g class="farm-channel channel-{state}" data-canal-id="{cid}" data-loss="{loss if loss is not None else ""}">'
-                   f'<title>{safe(label)}: {safe(loss_text)}; {safe(flow_text)}</title>'
-                   f'<path d="M22 {y0} V{y1}" stroke="{color}" stroke-width="1.3" fill="none"/>'
-                   f'<circle cx="22" cy="{y1}" r="1" fill="{color}"/>'
-                   f'<text x="1" y="{y0 + 6}" font-size="2.5" fill="{color}" font-weight="600">{safe(label[:18])}</text>'
-                   f'<text x="1" y="{y0 + 10}" font-size="2.1" fill="#536961">{safe(loss_text)}</text>'
-                   f'<text x="1" y="{y0 + 14}" font-size="2.1" fill="#536961">{safe(flow_text)}</text></g>')
+        route = path(iso(CANAL_X, t0), iso(CANAL_X, t1))
+        # El grosor sigue al caudal que entra al tramo según el balance ya calculado.
+        width = round(.8 + 3.2 * float(row["caudal_entrada_ls"]) / float(inlet), 2) if row and inlet else 2.4
+        a, b = iso(CANAL_X, (t0 + t1) / 2)
+        a -= 12  # Deja libre el canal, que baja en diagonal hacia la izquierda.
+        c, d = iso(CANAL_X, t1)
+        channel_svg.append(f'<g class="farm-channel channel-{state}" data-canal-id="{cid}" data-loss="{loss if loss is not None else ""}">'
+                           f'<title>{safe(label)}: {safe(loss_text)}; {safe(flow_text)}</title>'
+                           f'<path d="{route}" stroke="#5f7167" stroke-width="{width + 1.2}" stroke-linecap="round" fill="none"/>'
+                           f'<path d="{route}" stroke="{color}" stroke-width="{width}" fill="none"/>'
+                           f'<path class="farm-water" d="{route}" fill="none"/>'
+                           f'<circle cx="{c}" cy="{d}" r="1.5" fill="{color}"/>'
+                           f'<text x="{a}" y="{b - 4}" font-size="3.4" text-anchor="end" fill="{CHANNEL_INK[state]}" font-weight="700">{safe(label[:16])}</text>'
+                           f'<text x="{a}" y="{b}" font-size="2.9" text-anchor="end" class="farm-axis">{safe(loss_text)}</text>'
+                           f'<text x="{a}" y="{b + 4}" font-size="2.9" text-anchor="end" class="farm-axis">{safe(flow_text)}</text></g>')
     # Conexiones lógicas: no se reparte ni descuenta caudal por sector.
     for row in sectors.to_dict("records"):
-        x, y = 28 + row["x"], 9 + row["y"] + row["alto"] / 2
+        middle = row["y"] + row["alto"] / 2
         tap = taps[row["canal_id"]]
-        svg.append(f'<path class="farm-connection" data-sector-id="{safe(row["sector_id"])}" data-canal-id="{safe(row["canal_id"])}" d="M22 {tap} H26 V{y} H{x}" stroke="#2875a0" stroke-width=".5" stroke-dasharray="1 .7" fill="none" marker-end="url(#farm-arrow)"/>')
-    for row in sectors.to_dict("records"):
+        route = path(iso(CANAL_X, tap), iso(-4, tap), iso(-4, middle), iso(row["x"], middle))
+        svg.append(f'<path class="farm-connection" data-sector-id="{safe(row["sector_id"])}" data-canal-id="{safe(row["canal_id"])}" d="{route}" stroke="#17608a" stroke-width=".8" stroke-dasharray="1.6 1.1" fill="none" marker-end="url(#farm-arrow)"/>')
+    svg.extend(channel_svg)
+    # Se pintan de atrás hacia adelante para que los bloques cercanos tapen a los lejanos.
+    for row in sorted(sectors.to_dict("records"), key=lambda r: r["x"] + r["ancho"] / 2 + r["y"] + r["alto"] / 2):
         name, sid = row["sector"], row["sector_id"]
         diagnosis = risks.get(name)
         state = sector_state(diagnosis)
-        fill, ink = SECTOR_COLORS[state]
+        top, left, right, ink = BLOCK_COLORS[state]
         risk = diagnosis["riesgo_deficit_ia_0_100"] if diagnosis else None
         score = f'{risk:.0f}/100' if risk is not None and pd.notna(risk) else 'Pendiente'
         priority = f'P{diagnosis["orden_propuesto"]}' if diagnosis else ''
-        x, y, w, h = row["x"] + 28, row["y"] + 9, row["ancho"], row["alto"]
-        font = min(3.2, w / 7, h / 4.2)
+        x, y, w, d = row["x"], row["y"], row["ancho"], row["alto"]
+        h = block_height(state, risk)
+        font = min(3.4, min(w, d) / 6)
         crop = str(row["cultivo"])
         label = str(name)
-        max_chars = max(6, int(w / (font * .52)))
+        max_chars = max(6, int((w + d) * ISO_X * .62 / (font * .52)))
         shown = label if len(label) <= max_chars else label[:max_chars - 1] + '…'
-        stroke = '#213b35' if sid == selected_id else ink
-        svg.append(f'<g class="farm-sector risk-{state}" data-sector-id="{safe(sid)}" data-sector-name="{safe(name)}" data-risk="{risk if risk is not None else ""}">'
+        chosen = sid == selected_id
+        cx, cy = iso(x + w / 2, y + d / 2, h)
+        svg.append(f'<g class="farm-sector risk-{state}{" is-selected" if chosen else ""}" data-sector-id="{safe(sid)}" data-sector-name="{safe(name)}" data-risk="{risk if risk is not None else ""}" data-box="{x} {y} {w} {d}">'
                    f'<title>{safe(name)} · {safe(crop)} · {row["area_ha"]:.2f} ha · Riesgo {score} · {priority}</title>'
-                   f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="1" fill="{fill}" stroke="{stroke}" stroke-width="{.85 if sid == selected_id else .35}"/>'
-                   f'<text x="{x + w / 2}" y="{y + h / 2 - font}" text-anchor="middle" font-size="{font}" fill="{ink}" font-weight="600">{safe(shown)}</text>'
-                   f'<text x="{x + w / 2}" y="{y + h / 2 + font * .5}" text-anchor="middle" font-size="{font * .75}" fill="#536961">{safe(crop[:max_chars])} · {row["area_ha"]:.1f} ha</text>'
-                   f'<text x="{x + w / 2}" y="{y + h / 2 + font * 1.85}" text-anchor="middle" font-size="{font * .85}" fill="{ink}">Riesgo {score} · {priority}</text></g>')
+                   f'<polygon fill="{left}" points="{poly(iso(x, y + d, h), iso(x + w, y + d, h), iso(x + w, y + d), iso(x, y + d))}"/>'
+                   f'<polygon fill="{right}" points="{poly(iso(x + w, y, h), iso(x + w, y + d, h), iso(x + w, y + d), iso(x + w, y))}"/>'
+                   f'<polygon fill="{top}" stroke="{"#17352a" if chosen else right}" stroke-width="{.9 if chosen else .3}" stroke-linejoin="round" points="{poly(iso(x, y, h), iso(x + w, y, h), iso(x + w, y + d, h), iso(x, y + d, h))}"/>'
+                   f'<text x="{cx}" y="{cy - font * 1.5}" text-anchor="middle" font-size="{font}" fill="{ink}" font-weight="700">{safe(shown)}</text>'
+                   f'<text x="{cx}" y="{cy - font * .2}" text-anchor="middle" font-size="{font * .75}" fill="{ink}">{safe(crop[:max_chars])} · {row["area_ha"]:.1f} ha</text>'
+                   f'<text x="{cx}" y="{cy + font * 1.05}" text-anchor="middle" font-size="{font * .8}" fill="{ink}" font-weight="600">Riesgo {score} · {priority}</text></g>')
     svg.append('</svg>')
-    badge = '<p class="map-preview">Vista previa · aplicá o guardá la configuración para incorporarla.</p>' if preview else ''
+    badge = '<p class="map-preview">Vista previa. Aplicá o guardá la configuración para incorporarla.</p>' if preview else ''
     return (badge + '<div class="farm-canvas">' + ''.join(svg).replace('farm-arrow', 'farm-arrow-' + canvas_id) + '</div>'
             '<div class="farm-legend" aria-label="Leyenda"><span><i class="low"></i>Verde · Normal &lt;45</span><span><i class="medium"></i>Amarillo · Advertencia 45–69</span><span><i class="high"></i>Rojo · Crítico ≥70</span><span><i class="unknown"></i>Gris · Información insuficiente</span></div>'
-            '<p class="farm-caption">Canales: azul &lt;10% · amarillo 10–19% · rojo ≥20% de pérdida IA. Líneas discontinuas: asociación lógica, sin reparto hidráulico por sector. Croquis relativo; la superficie se declara aparte.</p>')
+            '<p class="farm-caption">Cuanto más alto el bloque, mayor el riesgo estimado. El grosor del canal sigue al caudal que queda en cada tramo. Canales: azul &lt;10% · amarillo 10–19% · rojo ≥20% de pérdida IA. Líneas discontinuas: asociación lógica, sin reparto hidráulico por sector. Croquis relativo; la superficie se declara aparte.</p>')
 
 
 def sector_detail_html(sectors, channels, result, selected):

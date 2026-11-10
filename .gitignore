@@ -10,3 +10,5 @@ __pycache__/
 .agents/
 .DS_Store
 Thumbs.db
+# Historial local de decisiones: se genera al usar la app.
+data/decisiones.json

@@ -17,16 +17,15 @@ def main():
         return next(i for i, c in components.items() if c["props"].get("label") == label)
 
     summary_id = next(i for i, c in components.items() if c["type"] == "html" and "stat-grid" in str(values[i]))
-    overview_id = cid("Sectores de la finca · valores iniciales")
     sector_name = cid("Nombre del sector")
-    full_priority = cid("Detalle del modelo y priorización")
+    diagnosis = cid("Diagnóstico por sector")
     repairs = cid("Reparaciones · ranking por litros recuperables / $1000 ARS")
     channels = cid("Características de los canales")
 
     def call(api):
         dependency = next(d for d in config["dependencies"] if d["api_name"] == api)
         inputs = [i for i in dependency["inputs"] if components[i]["type"] != "state"]
-        outputs = [i for i in dependency["outputs"] if components[i]["type"] not in ["state", "button"]]
+        outputs = [i for i in dependency["outputs"] if components[i]["type"] not in ["state", "button", "column", "row"]]
         result = client.predict(*(values[i] for i in inputs), api_name="/" + api)
         if len(outputs) == 1:
             result = [result]
@@ -43,9 +42,8 @@ def main():
         return [dict(zip(table["headers"], row)) for row in table["data"]]
 
     def count(n):
-        assert len(rows(overview_id)) == n
         assert f'"stat-value">{n} sectores<' in values[summary_id]
-        assert len(rows(full_priority)) == n
+        assert len(rows(diagnosis)) == n
 
     call("simular")
     count(5)
@@ -59,8 +57,8 @@ def main():
         call(api)
         count(5)
         if api == "falla_sensor":
-            row = next(r for r in rows(full_priority) if r["sector"] == "Sector C")
-            assert row["humedad_directa"] == "NO DISPONIBLE" and row["confianza"] == "BAJA"
+            row = next(r for r in rows(diagnosis) if r["Sector"] == "Sector C")
+            assert row["Confianza"] == "BAJA" and "sin usar humedad" in row["Motivo"]
         print("PASS Gradio preset:", api)
     call("normal")
     values[channels]["data"][1][4] = 1.0
@@ -73,23 +71,32 @@ def main():
     print("PASS Gradio: fuga y costo modifican resultados")
     values[cid("Temperatura ambiente (°C) · 0–42")] = 38
     call("simular")
-    assert len(rows(full_priority)) == 5
+    assert len(rows(diagnosis)) == 5
     for name in ["Riesgo con sensor", "Riesgo sin sensor", "Pérdidas del canal"]:
-        values[cid("Modelo a visualizar")] = name
+        values[cid("Variables que más influyen")] = name
         call("importancia")
     call("restaurar_base")
     count(5)
-    call("decision_humana")
+    decisions = Path(__file__).resolve().parent.parent / "data" / "decisiones.json"
+    previous = decisions.read_bytes() if decisions.exists() else None
+    values[cid("¿Estás de acuerdo con el reparto?")] = "De acuerdo"
+    values[cid("¿Harías esta reparación?")] = "De acuerdo"
+    try:
+        call("decision_humana")
+        assert decisions.exists()
+    finally:
+        if previous is None:
+            decisions.unlink(missing_ok=True)
+        else:
+            decisions.write_bytes(previous)
     print("PASS Gradio: clima, tres importancias, restauración y H1 pendiente")
     map_id = next(i for i,c in components.items() if c["type"] == "html" and "farm-main" in c["props"].get("elem_classes", []))
-    config_id = cid("Configuración de sectores · completa")
     values[cid("Ver detalle de")] = "Sector B"
     call("seleccionar_sector")
     values[cid("Posición X")] = 60
     values[cid("Canal asociado")] = "canal-d"
     call("simular")
-    sector_b = next(r for r in rows(config_id) if r["sector"] == "Sector B")
-    assert sector_b["x"] == 60 and sector_b["canal_id"] == "canal-d"
+    assert 'data-box="60.0 8.0' in values[map_id] and 'data-sector-id="sector-2" data-canal-id="canal-d"' in values[map_id]
     assert 'data-sector-id="sector-2" data-canal-id="canal-d"' in values[map_id]
     call("agregar_sector")
     assert values[map_id].count('class="farm-sector ') == 6
@@ -101,8 +108,7 @@ def main():
         count(5)
         call("cargar_configuracion")
         count(6)
-        sector_b = next(r for r in rows(config_id) if r["sector"] == "Sector B")
-        assert sector_b["x"] == 60 and sector_b["canal_id"] == "canal-d"
+        assert 'data-box="60.0 8.0' in values[map_id] and 'data-sector-id="sector-2" data-canal-id="canal-d"' in values[map_id]
         call("restaurar_finca")
         count(5)
     finally:

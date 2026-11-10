@@ -53,7 +53,7 @@ class FarmMapTests(unittest.TestCase):
         args = list(self.args)
         args[7] = apply_geometry(args[7], "Sector B", [60, 10, 30, 30, "canal-b"])
         changed = analyze_inputs(*args)
-        self.assertIn('x="88.0" y="19.0" width="30.0"', farm_map_html(args[7], args[8], changed))
+        self.assertIn('data-box="60.0 10.0 30.0 30.0"', farm_map_html(args[7], args[8], changed))
         pd.testing.assert_series_equal(self.result["priority"].set_index("sector")["riesgo_deficit_ia_0_100"].sort_index(),
                                        changed["priority"].set_index("sector")["riesgo_deficit_ia_0_100"].sort_index())
 
